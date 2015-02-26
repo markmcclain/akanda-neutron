@@ -14,14 +14,17 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 
+import netaddr
+from neutron.common import exceptions as n_exc
+from neutron.common import constants as n_constants
 from neutron.db import l3_db
+from neutron.db import models_v2
+from neutron.extensions import l3
 from neutron.plugins.ml2 import plugin
 from neutron.services.l3_router import l3_router_plugin
 
 from akanda.neutron.plugins import decorators as akanda
 from akanda.neutron.plugins import floatingip
-
-akanda.monkey_patch_ipv6_generator()
 
 
 class Ml2Plugin(floatingip.ExplicitFloatingIPAllocationMixin,
@@ -31,6 +34,11 @@ class Ml2Plugin(floatingip.ExplicitFloatingIPAllocationMixin,
         plugin.Ml2Plugin._supported_extension_aliases +
         ["dhrouterstatus"]
     )
+
+    try:
+        _supported_extension_aliases.remove('agent_scheduler')
+    except ValueError:
+        pass
 
     # The auto_add_other_resources decorator enable the automatic
     # creation of a bunch of resources. These resources are in the
@@ -51,6 +59,27 @@ class Ml2Plugin(floatingip.ExplicitFloatingIPAllocationMixin,
     def update_subnet(self, context, id, subnet):
         return super(Ml2Plugin, self).update_subnet(
             context, id, subnet)
+
+    # Nova is unhappy when the port does not have any IPs, so we're going
+    # to add the v6 link local dummy data.
+    # TODO(mark): limit this lie to service user
+    def _make_port_dict(self, port, fields=None, process_extensions=True):
+        res = super(Ml2Plugin, self)._make_port_dict(
+            port,
+            fields,
+            process_extensions
+        )
+
+        if not res.get('fixed_ips') and res.get('mac_address'):
+            v6_link_local = netaddr.EUI(res['mac_address']).ipv6_link_local()
+
+            res['fixed_ips'] = [
+                {
+                    'subnet_id': '00000000-0000-0000-0000-000000000000',
+                    'ip_address': str(v6_link_local)
+                }
+            ]
+        return res
 
 
 class L3RouterPlugin(l3_router_plugin.L3RouterPlugin):
